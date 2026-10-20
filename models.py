@@ -22,6 +22,12 @@ from features import CATEGORICAL, FeatureBuilder, MarketIndex, month_index, mont
 
 GBM_PARAMS = dict(max_iter=800, learning_rate=0.05, max_leaf_nodes=63, min_samples_leaf=40,
                   l2_regularization=1.0, early_stopping=False, random_state=0)
+# the off-market value model itself: slower learning, smaller leaves, 30% of features tried at
+# each split, averaged over two seeds; chosen on the 2023 and 2024 backtests, where it cut MdAPE
+# by 0.07 and 0.22 points and MAPE by 0.2 (with residual comps). The out-of-fold fits behind
+# residual comps and the list-aware model keep GBM_PARAMS: a tuned out-of-fold model was no better.
+VALUE_PARAMS = dict(learning_rate=0.025, max_iter=2000, min_samples_leaf=20, max_features=0.3)
+VALUE_SEEDS = (0, 1)
 RECENCY_HALFLIFE_MONTHS = 12   # a sale 12 months before the data end counts half as much
 DEFAULT_HORIZON_MONTHS = 4     # June to September
 # residual comps: shift each off-market prediction by the average out-of-fold miss of the 10
@@ -69,7 +75,8 @@ class OffMarketAVM:
         self.y_train = t["ystar"].to_numpy()
         self.weights = 0.5 ** ((months.max() - months) / RECENCY_HALFLIFE_MONTHS)
         self.train = t
-        self.gbm = _gbm(self.X_train.columns).fit(self.X_train, self.y_train, sample_weight=self.weights)
+        self.gbms = [_gbm(self.X_train.columns, **VALUE_PARAMS, random_state=seed)
+                     .fit(self.X_train, self.y_train, sample_weight=self.weights) for seed in VALUE_SEEDS]
         # out-of-fold value for every training sale: what the model guesses without having seen it
         self.oof = np.zeros(len(t))
         for fit_rows, held in KFold(5, shuffle=True, random_state=1).split(self.X_train):
@@ -104,7 +111,7 @@ class OffMarketAVM:
     def predict_log(self, homes, window_end=None, comps=True):
         homes = homes.reset_index(drop=True)
         X = self.builder.transform(homes)
-        value = self.gbm.predict(X) + self.market_level(homes, window_end)
+        value = np.mean([g.predict(X) for g in self.gbms], 0) + self.market_level(homes, window_end)
         if comps:
             value = value + self.residual_comps(homes)
         return value, X
