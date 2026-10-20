@@ -14,6 +14,7 @@ ListAwareModel predicts log(sold / list) from the gap between the list price and
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold
 from sklearn.neighbors import BallTree
 
@@ -22,18 +23,25 @@ from features import CATEGORICAL, FeatureBuilder, MarketIndex, month_index, mont
 
 GBM_PARAMS = dict(max_iter=800, learning_rate=0.05, max_leaf_nodes=63, min_samples_leaf=40,
                   l2_regularization=1.0, early_stopping=False, random_state=0)
-# the off-market value model itself: slower learning, smaller leaves, 30% of features tried at
-# each split, averaged over two seeds; chosen on the 2023 and 2024 backtests, where it cut MdAPE
-# by 0.07 and 0.22 points and MAPE by 0.2 (with residual comps). The out-of-fold fits behind
-# residual comps and the list-aware model keep GBM_PARAMS: a tuned out-of-fold model was no better.
-VALUE_PARAMS = dict(learning_rate=0.025, max_iter=2000, min_samples_leaf=20, max_features=0.3)
-VALUE_SEEDS = (0, 1)
+# the off-market value model itself: the average of four tree models, all with smaller leaves and
+# 30% of features tried at each split; two learn slowly (2,000 trees), two at GBM_PARAMS' pace,
+# each pair over two seeds. Chosen on the 2023 and 2024 backtests: the slow pair cut MdAPE by 0.07
+# and 0.22 points and MAPE by 0.2 (with residual comps); adding the fast pair, another 0.03.
+# The out-of-fold fits behind residual comps and the list-aware model keep GBM_PARAMS: a tuned
+# out-of-fold model was no better.
+SLOW = dict(learning_rate=0.025, max_iter=2000, min_samples_leaf=20, max_features=0.3)
+FAST = dict(min_samples_leaf=20, max_features=0.3)
+VALUE_MODELS = [dict(params, random_state=seed) for params in (SLOW, FAST) for seed in (0, 1)]
 RECENCY_HALFLIFE_MONTHS = 12   # a sale 12 months before the data end counts half as much
 DEFAULT_HORIZON_MONTHS = 4     # June to September
-# residual comps: shift each off-market prediction by the average out-of-fold miss of the 10
-# nearest earlier sales of the same type, shrunk toward zero (sum / (10 + 20)); chosen on the
-# 2023 and 2024 backtests, where it cut MdAPE by 0.14 and 0.21 points, mostly on houses
-RESIDUAL_K, RESIDUAL_SHRINK = 10, 20
+# residual comps: shift each off-market prediction by the out-of-fold misses of the nearest
+# earlier sales of the same type. The average miss of the 5, 10, 20 and 40 nearest is weighted
+# by a ridge fit per property type on the training sales (each with itself left out); detached
+# houses lean on the widest ring, condos on the inner ones. Chosen on the 2023 and 2024
+# backtests, where it beat the earlier fixed rule (10 nearest, sum / 30) by about 0.06 MdAPE
+# points; the fixed rule had itself cut MdAPE by 0.14 and 0.21 points, mostly on houses.
+RESIDUAL_RINGS = (5, 10, 20, 40)
+RESIDUAL_MIN_SALES = 1000   # types with fewer training sales (co-ops) share pooled weights
 
 
 def make_model(track):
@@ -75,8 +83,8 @@ class OffMarketAVM:
         self.y_train = t["ystar"].to_numpy()
         self.weights = 0.5 ** ((months.max() - months) / RECENCY_HALFLIFE_MONTHS)
         self.train = t
-        self.gbms = [_gbm(self.X_train.columns, **VALUE_PARAMS, random_state=seed)
-                     .fit(self.X_train, self.y_train, sample_weight=self.weights) for seed in VALUE_SEEDS]
+        self.gbms = [_gbm(self.X_train.columns, **params).fit(self.X_train, self.y_train, sample_weight=self.weights)
+                     for params in VALUE_MODELS]
         # out-of-fold value for every training sale: what the model guesses without having seen it
         self.oof = np.zeros(len(t))
         for fit_rows, held in KFold(5, shuffle=True, random_state=1).split(self.X_train):
@@ -84,6 +92,7 @@ class OffMarketAVM:
                                                sample_weight=self.weights[fit_rows])
             self.oof[held] = g.predict(self.X_train.iloc[held])
         self.residual = self.y_train - self.oof   # how far each sale landed from the model's guess
+        self._fit_ring_weights()
         _FITTED.clear()
         _FITTED[key] = self
         return self
@@ -95,18 +104,42 @@ class OffMarketAVM:
     def market_level(self, homes, window_end=None):
         return self.index.expected(homes["date_listed"], self.cutoff, self.window_end(window_end), self.dom_quantiles)
 
-    def residual_comps(self, homes):
-        """shrunk mean out-of-fold miss of the nearest training sales of the same type"""
-        t, k, out = self.train, RESIDUAL_K, np.zeros(len(homes))
+    def ring_misses(self, homes, leave_self_out=False):
+        """mean out-of-fold miss of the 5, 10, 20 and 40 nearest training sales of the same type"""
+        t, k = self.train, max(RESIDUAL_RINGS)
+        out = np.zeros((len(homes), len(RESIDUAL_RINGS)))
         for kind in features.PROPERTY_TYPES:
             same = np.where(t["house_type_name"].to_numpy() == kind)[0]
             rows = np.where(homes["house_type_name"].to_numpy() == kind)[0]
-            if len(rows) == 0 or len(same) < k:
+            if len(rows) == 0 or len(same) <= k:
                 continue
             tree = BallTree(np.radians(t.iloc[same][["latitude", "longitude"]].to_numpy()), metric="haversine")
-            _, i = tree.query(np.radians(homes.iloc[rows][["latitude", "longitude"]].to_numpy()), k=k)
-            out[rows] = self.residual[same][i].sum(1) / (k + RESIDUAL_SHRINK)
+            _, i = tree.query(np.radians(homes.iloc[rows][["latitude", "longitude"]].to_numpy()), k=k + 1)
+            nearest = same[i]
+            drop = np.full(len(rows), k)   # one spare neighbour: the farthest, or the sale itself
+            if leave_self_out:   # homes are the training sales; the sale itself is not always first when coordinates tie
+                own = nearest == rows[:, None]
+                drop = np.where(own.any(1), own.argmax(1), k)
+            keep = np.ones(nearest.shape, bool)
+            keep[np.arange(len(rows)), drop] = False
+            misses = self.residual[nearest[keep].reshape(len(rows), k)]
+            for j, ring in enumerate(RESIDUAL_RINGS):
+                out[rows, j] = misses[:, :ring].mean(1)
         return out
+
+    def _fit_ring_weights(self):
+        """how much of each ring's mean miss carries over to a new home, per property type"""
+        F, kinds = self.ring_misses(self.train, leave_self_out=True), self.train["house_type_name"].to_numpy()
+        fit = lambda rows: Ridge(alpha=1.0).fit(F[rows], self.residual[rows], sample_weight=self.weights[rows]).coef_
+        pooled = fit(np.ones(len(kinds), bool))
+        self.ring_weights = {kind: fit(kinds == kind) if (kinds == kind).sum() >= RESIDUAL_MIN_SALES else pooled
+                             for kind in features.PROPERTY_TYPES}
+
+    def residual_comps(self, homes):
+        """weighted mean out-of-fold miss of the nearest training sales of the same type"""
+        none = np.zeros(len(RESIDUAL_RINGS))
+        weights = np.array([self.ring_weights.get(kind, none) for kind in homes["house_type_name"]])
+        return (self.ring_misses(homes) * weights).sum(1)
 
     def predict_log(self, homes, window_end=None, comps=True):
         homes = homes.reset_index(drop=True)

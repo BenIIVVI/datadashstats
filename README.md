@@ -39,9 +39,9 @@ On Windows, use `py` if `python` is not found.
 - `python run.py backtest`: the main test. Train on sales before June 1, predict June to September,
   for 2023 and 2024 (used to build the model) and 2025 (held back, run once at the end).
 - Off-market: boosted trees on inflation-adjusted log price (building history, nearest earlier
-  sales, remarks text), plus a monthly market index projected through the summer. The trees learn
-  slowly with column sampling and are averaged over two seeds; each value is then nudged by the
-  shrunk out-of-fold miss of the 10 nearest earlier sales (residual comps).
+  sales, remarks text), plus a monthly market index projected through the summer. Four tree models
+  with column sampling are averaged; each value is then nudged by the out-of-fold misses of the
+  5, 10, 20 and 40 nearest earlier sales, weighted per property type (residual comps).
 - List-aware: predicts sale-to-list from the gap between list price and off-market value, days
   already listed, and a seasonally projected sale-to-list level.
 - `python run.py report` adds the backtest table, 80% price-range coverage and error breakdowns.
