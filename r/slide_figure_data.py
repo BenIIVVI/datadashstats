@@ -147,6 +147,25 @@ def season_2024(listings):
     rows.append(("Four boosted models, averaged", mdape(np.exp(np.mean(value, 0) + level), sold)))
     pd.DataFrame(rows, columns=["model", "mdape"]).to_csv(OUT / "onetree.csv", index=False)
 
+    # two small readable trees for the tree-logic slides: one on neighbours' value and size, and
+    # a three-level one on four features, with the example home's path through it
+    def nodes(dt, columns, path=()):
+        tr = dt.tree_
+        return pd.DataFrame({"node": range(tr.node_count), "left": tr.children_left, "right": tr.children_right,
+                             "feature": [columns[f] if f >= 0 else "" for f in tr.feature], "threshold": tr.threshold,
+                             "n": tr.n_node_samples, "value": np.exp(tr.value[:, 0, 0]),
+                             "on_path": [i in path for i in range(tr.node_count)]})
+    simple = pd.DataFrame({"sqft": np.exp(avm.X_train["lsqft"]), "nbr_value": np.exp(avm.X_train["knn_val"])}).fillna(-1)
+    dt2 = DecisionTreeRegressor(max_depth=2, min_samples_leaf=500).fit(simple, avm.y_train)
+    nodes(dt2, list(simple.columns)).to_csv(OUT / "tree2.csv", index=False)
+    def readable(frame):
+        return pd.DataFrame({"is_condo": frame["type"].isin(["Condo Apt", "Condo Townhouse", "Co-Op Apt"]).astype(int).to_numpy(),
+                             "sqft": np.exp(frame["lsqft"]).fillna(-1).to_numpy(), "nbr_value": np.exp(frame["knn_val"]).fillna(-1).to_numpy(),
+                             "text_score": frame["text_score"].to_numpy()})
+    dt3 = DecisionTreeRegressor(max_depth=3, min_samples_leaf=1000).fit(readable(avm.X_train), avm.y_train, sample_weight=avm.weights)
+    path = dt3.decision_path(readable(X.iloc[[r]])).indices
+    nodes(dt3, ["is_condo", "sqft", "nbr_value", "text_score"], set(path)).to_csv(OUT / "tree3.csv", index=False)
+
     # permutation importance by feature family
     families = {"Size & rooms": ["lsqft", "area_is_range", "bedrooms", "washrooms", "parking_total", "garage", "lot_front", "lot_depth", "lot_area"],
                 "Type & style": ["type", "style"], "Location": ["lat", "lon", "muni", "community"],
