@@ -48,6 +48,18 @@ On Windows, use `py` if `python` is not found.
 
 Full run: `python run.py backtest && python run.py validate && python run.py report && python run.py predict && python run.py check`
 
+## Slide figures (R)
+
+The off-market slide charts are drawn in R (ggplot2) from the model's own numbers. After
+`python run.py backtest`, from this folder:
+
+```
+python r/slide_figure_data.py    # model numbers -> outputs/figure_data/ (about 15 minutes)
+Rscript r/slide_figures.R        # charts -> figures/slides/
+```
+
+R packages: `install.packages(c("ggplot2", "scales", "ragg"))`.
+
 ## What to edit
 
 - **`features.py`**: the features.
