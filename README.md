@@ -1,5 +1,15 @@
 # SSU Data Dash: predict Toronto home prices
 
+**Team CatBoosters** (Flora Yu, Ben Rudin, Hannah Xu, Caitlin Daley)
+
+- Final report: [`report/SSU_Data_Dash_2026_Report.pdf`](report/SSU_Data_Dash_2026_Report.pdf) (Word version alongside it)
+- Video: https://www.youtube.com/watch?v=96UYkVGed-g
+- Submission files: [`submissions/submission_off_market.csv`](submissions/submission_off_market.csv) and
+  [`submissions/submission_list_aware.csv`](submissions/submission_list_aware.csv)
+- Walk-forward validation MdAPE (Dec 2025 to May 2026): off-market 7.31%, list-aware 4.19%
+
+`report/report.tex` is an earlier LaTeX draft; the PDF above is the report we submitted.
+
 Start with the case handout, [`handout.md`](handout.md), and the judging rubric, [`rubric.md`](rubric.md).
 
 Two tracks:
