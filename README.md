@@ -42,8 +42,9 @@ On Windows, use `py` if `python` is not found.
   sales, remarks text), plus a monthly market index projected through the summer. Four tree models
   with column sampling are averaged; each value is then nudged by the out-of-fold misses of the
   5, 10, 20 and 40 nearest earlier sales, weighted per property type (residual comps).
-- List-aware: predicts sale-to-list from the gap between list price and off-market value, days
-  already listed, and a seasonally projected sale-to-list level.
+- List-aware (`list_aware.py`, needs `catboost`, which is in requirements.txt): separate models for
+  condos and freeholds, each blending a weighted ridge regression on the list price and home features
+  with CatBoost on log(sale / list) (50% CatBoost for condos, 70% for freeholds).
 - `python run.py report` adds the backtest table, 80% price-range coverage and error breakdowns.
 
 Full run: `python run.py backtest && python run.py validate && python run.py report && python run.py predict && python run.py check`

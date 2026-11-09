@@ -11,3 +11,9 @@ venv/
 .DS_Store
 .Rhistory
 report/*.pdf
+
+# CatBoost training logs
+catboost_info/
+report/*.aux
+report/*.log
+report/*.out

@@ -19,7 +19,7 @@
 \vspace{-1.5em}
 
 \noindent\begin{tabular}{@{}ll}
-\textbf{Video (YouTube, unlisted is fine):} & \url{https://youtu.be/YOUR-VIDEO} \\
+\textbf{Video (YouTube, unlisted is fine):} & \url{https://www.youtube.com/watch?v=96UYkVGed-g} \\
 \textbf{Code and submission files (GitHub):} & \url{https://github.com/BenIIVVI/datadashstats} \\
 \end{tabular}
 
@@ -27,10 +27,12 @@
 We value each home in two parts: what it is worth at an average market level, learned by gradient-boosted
 trees from 52 features, and where the market will be in the summer it sells, projected from a monthly price
 index. A last step corrects each estimate by how the model has been missing on nearby homes of the same type.
-On walk-forward validation (December 2025 to May 2026) the off-market model's typical miss is
-\textbf{7.31\%} against 17.7\% for the organisers' simple baseline, and on five summers predicted only from
-earlier sales it is 6.6--6.9\% in normal years. Most of the remaining error is home quality the data does
-not record, which is why condos (5.5\%) are far easier than houses (8.4--8.7\%).
+The list-aware model only has to predict the gap between sale and list price, with CatBoost and a
+ridge regression blended separately for condos and freeholds.
+On walk-forward validation (December 2025 to May 2026) the typical miss is \textbf{7.31\%} off-market and
+\textbf{4.19\%} list-aware, against 17.7\% for the organisers' simple baseline; on five summers predicted
+only from earlier sales the off-market miss is 6.6--6.9\% in normal years. Most of the remaining error is
+home quality the data does not record, which is why condos are far easier than houses on both tracks.
 
 \section{Data and features}
 We train on the 150,000 sales from January 2021 to May 2026 and predict the 3,974 off-market and 4,064
@@ -42,10 +44,9 @@ days on market from \emph{past} sales is used only to guess when a test home wil
 washrooms, parking and one dummy per sale month. The month coefficients are a monthly market level, net of
 what sold: it peaks in March 2022 and is about 25\% lower by December 2025, with a dip from spring into
 summer every year. Every training price is \emph{deflated} by its month's level, so the tree model learns
-what a home is worth at an average market level and the index alone carries time. Working in logs makes every
-effect a percentage, which matches how the score is computed.
+what a home is worth at an average market level and the index alone carries time.
 
-\textbf{Features (52 per home).}
+\textbf{Off-market features (52 per home; never the list price; list-aware inputs are in section 2).}
 (i) The home: size (the midpoint when given as a range, plus a flag), bedrooms, washrooms, parking, garage,
 lot frontage, depth and area, type, style, municipality, community, latitude and longitude.
 (ii) Same building: earlier sales at the exact coordinates (condos share them; for a house it is a repeat
@@ -63,8 +64,7 @@ exclude the sale itself, and training rows get out-of-fold text scores.
 \textbf{Off-market.} The target is the deflated log price, with recent sales weighted more (a sale's weight
 halves every 12 months). The value is the average of four histogram gradient-boosting models
 (scikit-learn): two with 2,000 trees at learning rate 0.025 and two with 800 trees at 0.05, all with
-leaves of at least 20 sales and 30\% of features tried at each split, each with its own seed. Boosting starts
-every home at the average and adds small trees, each fitted to the errors still left; before the local fix,
+leaves of at least 20 sales and 30\% of features tried at each split, each with its own seed. Before the local fix,
 one tree on its own misses by 11.1\% on the 2024 summer and the four-model average by 6.85\%.
 The \emph{market level} for a test home averages the projected index over its likely sale dates: its listing
 date plus 100 typical times on market from past sales, kept only if inside June--September. Months past May
@@ -78,21 +78,26 @@ $\exp(\textrm{value} + \textrm{market level} + \textrm{local fix})$: the three l
 For example, one detached house in the 2024 backtest: \$898,771 $\times$ 0.990 (June market) $\times$ 1.121
 (its area sells above the model's guesses) $=$ \$997,309; it sold for \$994,600.
 
-\textbf{List-aware.} Here the target is log(sale / list price), net of a monthly sale-to-list level that is
-projected into the summer the same way (at half the seasonal change, which has shrunk every year). Inputs are
-the off-market features plus the log list price, the gap between the list price and the off-market
-out-of-fold value, the days already listed at the prediction date and the recent sale-to-list level;
-training rows simulate predictions made 0--3 months before the sale, as in the test. The off-market value
-is what makes the list price informative: an overpriced listing sells further below its list.
+\textbf{List-aware} (\texttt{list\_aware.py}). Condos (condo apartments, condo townhouses, co-ops) and
+freeholds each get a blend of two models. A ridge regression on size, rooms, parking, location, months since
+January 2021, property type and the list price predicts the sale price, with each sale weighted by
+$1/\textrm{price}^3$ so errors count in percentage terms. CatBoost predicts log(sale / list) from the same
+inputs plus municipality, community, style, garage, lot size and community $\times$ type as categorical
+features, weighted by $(\textrm{median price} / \textrm{price})^{1.5}$. The blend is 50\% CatBoost for condos
+and 70\% for freeholds. Both are fitted only on the training sales.
+\textbf{Why the two differ.} The list price already carries the current price level and what the seller's
+agent knows about condition, so the list-aware model only learns the sale-to-list gap and needs no market
+index or comparable sales. The off-market model may not use the list price, so it rebuilds the value from
+scratch: the index, nearest-sale and same-building features, the text and the local fix stand in for what
+the list price would have told it. That is why its error is about twice as large.
 
 \section{Validation}
 \textbf{Walk-forward} (the numbers we report): each month from December 2025 to May 2026 is predicted by
 models trained only on sales before it, six full refits. \textbf{Summer backtests} copy the real test: train
-on sales before June 1, predict June to September. Every modelling choice was made on the 2023 and 2024
-summers; 2025 was held back. It was first checked once, and looked at again after the last two changes, so
-we treat it as a confirmation rather than a pristine holdout. We also ran 2021 and 2022 with the final model
-(not used for any choice). We never used a random split, which would let the model learn from sales after
-the ones it predicts.
+on sales before June 1, predict June to September. Every off-market modelling choice was made on the 2023
+and 2024 summers; 2025 was held back. It was first checked once, and looked at again after the last two
+changes, so we treat it as a confirmation rather than a pristine holdout. We also ran 2021 and 2022 with the final model
+(not used for any choice). We never used a random split.
 
 \section{Results}
 \begin{table}[h]
@@ -109,19 +114,21 @@ Summer (train before June 1) & 2021 & 2022 & 2023 & 2024 & 2025 (held back) \\
 \midrule
 Off-market MdAPE / MAPE \% & 7.56 / 10.07 & 8.30 / 11.60 & 6.62 / 8.88 & 6.64 / 8.96 & 6.84 / 9.08 \\
 Off-market median signed error \% & +0.4 & +5.1 & +0.9 & +1.5 & +0.9 \\
-List-aware MdAPE / MAPE \% & & & 4.55 / 5.65 & 4.27 / 5.34 & 3.85 / 4.88 \\
+List-aware MdAPE / MAPE \% & & & 5.50 / 6.66 & 5.06 / 6.21 & 4.30 / 5.37 \\
+List-aware median signed error \% & & & +1.2 & +1.4 & +0.8 \\
 \bottomrule
 \end{tabular}
 \caption{Summer backtests. 2021 had five months of training data; 2022 is the year prices fell fast.}
 \end{table}
 
 Off-market, the typical miss falls from 17.7\% (simple baseline) and 20.8\% (starter, 10 nearest sales) to
-7.31\%; list-aware falls from 7.3\% (the list price) to 3.81\%. The validation figure is higher than the
-summers because March and April 2026 were hard months (7.9\% and 7.7\%) as prices rose quickly that spring;
+7.31\%; list-aware falls from 7.3\% (the list price) to 4.19\%, steady across the six months (4.0--4.4\%). The off-market validation figure is higher than
+the summers because March and April 2026 were hard months (7.9\% and 7.7\%) as prices rose quickly that spring;
 the other four months were 6.8--7.2\%. The hidden test is a summer, so we expect about 6.7--7.0\% off-market
-unless the summer market turns sharply (see 2022). Across all 54,991 out-of-sample predictions (figure 1),
-64\% land within 10\% of the sale price and 89\% within 20\%. Tuning the trees and learning the local-fix
-weights cut the typical miss by about 0.2 points on the development summers.
+unless the summer market turns sharply (see 2022). List-aware runs the other way: its summers are worse
+than validation (4.3--5.5\%, leaning about 1\% high, as summer homes sell further below their list price),
+so we expect about 4.5--5\% list-aware on the hidden test, not 4.19\%. Across all 54,991 off-market
+out-of-sample predictions (figure 1), 64\% land within 10\% of the sale price and 89\% within 20\%.
 
 \begin{figure}[h]
 \centering
@@ -149,23 +156,21 @@ estimates 4.9\% high) and Hazelfield (10.3\%, 93\% houses, median \$2.27M, 7.4\%
 areas such as Cedarglen (3.9\%). \textbf{Time.} Estimates lean about 2\% high in July and August, when the
 summer dip runs deeper than the projection, and 5\% high in 2022, when prices fell after the spring peak.
 
+\textbf{List-aware} shows the same pattern at about half the size: condo apartments miss by 3.6\%,
+detached and semi-detached houses by 5.2--5.7\%, the cheapest tenth by 3.6\% and the dearest by 5.3\%.
 \textbf{Honest uncertainty.} An 80\% range for each estimate, taken from the 10th to 90th percentile of the
 2023--24 misses for its property type, covered 79.5\% of the 2025 homes; its typical width is 22.6\% of the
 price (roughly $\pm$11\%). The bootstrap intervals in table 1 assume homes are independent; homes sold in the
 same month share the same market surprise, so the real uncertainty is somewhat wider.
 
 \section{Limitations}
-\textbf{What did not help}, all judged on the 2023 and 2024 summers: separate indexes for houses and
-condos (worse: the projection noise outweighed the bias it fixed); a sharper target for the text model (no
-change); following community price trends (changes in a community's premium have autocorrelation $-0.41$,
-so they reverse rather than persist); blending in a random forest (9.2\% on its own); neighbours matched on
-size, or on the exact same layout; separate tree models for houses and condos; a fixed summer bias
-correction (the best shift varied from 0 to 1.75\% by year).
+\textbf{What did not help} (off-market, judged on the 2023 and 2024 summers): separate indexes for houses
+and condos (projection noise outweighed the bias it fixed); following community price trends (they have
+autocorrelation $-0.41$, so they reverse); blending in a random forest (9.2\% alone); separate tree models
+for houses and condos; a fixed summer bias correction (the best shift varied from 0 to 1.75\% by year).
 \textbf{When not to trust it:} expensive and unusual houses; a summer when the market turns sharply; thin
 groups such as co-ops (50 test homes in 2025) and rarely traded communities. The data say nothing about age,
-renovation, floor level or condo fees, and those would help most. Next we would try quantile models for
-the ranges, and a projection that reacts to the most recent months instead of only past summers.
-
+renovation, floor level or condo fees, and those would help most.
 \section*{Outside data}
 \begin{tabular}{lll}
 \toprule
@@ -176,12 +181,7 @@ None & & \\
 \end{tabular}
 
 \section*{Reproducing our results}
-From a fresh copy of the repository (the data downloads itself on first use):\\
-\texttt{pip install -r requirements.txt}\\
-\texttt{python run.py backtest \&\& python run.py validate \&\& python run.py report}\\
-\texttt{python run.py predict \&\& python run.py check}\\
-All seeds are fixed, so these commands rebuild the two submission files exactly. The figures come from
-\texttt{python r/slide\_figure\_data.py}, \texttt{Rscript r/slide\_figures.R} and
-\texttt{python r/slide\_figures\_matplotlib.py}.
+\texttt{pip install -r requirements.txt}, then \texttt{python run.py} \texttt{backtest}, \texttt{validate},
+\texttt{report}, \texttt{predict} and \texttt{check}. Seeds are fixed, so this rebuilds both submission files.
 
 \end{document}

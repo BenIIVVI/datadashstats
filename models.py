@@ -19,6 +19,7 @@ from sklearn.model_selection import KFold
 from sklearn.neighbors import BallTree
 
 import features
+import list_aware
 from features import CATEGORICAL, FeatureBuilder, MarketIndex, month_index, month_start
 
 GBM_PARAMS = dict(max_iter=800, learning_rate=0.05, max_leaf_nodes=63, min_samples_leaf=40,
@@ -47,7 +48,9 @@ RESIDUAL_MIN_SALES = 1000   # types with fewer training sales (co-ops) share poo
 def make_model(track):
     """Return a fresh, untrained model for "off_market" or "list_aware"."""
     if track == "list_aware":
-        return ListAwareModel()
+        # The team's final list-aware model (list_aware.py). ListAwareModel below was our earlier
+        # sale-to-list model; it is kept for comparison but no longer used.
+        return list_aware.SplitPropertyEnsemble()
     return OffMarketAVM()
 
 

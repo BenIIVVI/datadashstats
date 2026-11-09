@@ -1,0 +1,113 @@
+% List-blind (off-market) part of the team report. Paste into report.tex, or \input{list_blind_section}.
+% Every number comes from our own validation: `python run.py backtest`, `validate` and `report`.
+
+\section{Off-market (list-blind) model}
+
+\textbf{Task and data.} We value a home with no list price. We train on the 150,000 sales from January 2021
+to May 2026 and predict the 3,974 off-market test homes, which sold June to September 2026. We use every
+column the test file has. The columns that only exist after a sale (sale price, sale date, days on market,
+the external AVM) are dropped from every home we predict, and the list price is never used. Days on
+market from \emph{past} sales is used only to guess when a test home is likely to sell.
+
+\textbf{Features (52 per home).}
+(i) \emph{Market index:} a ridge regression of log price on community $\times$ type, size, bedrooms,
+washrooms, parking and one dummy per sale month. The month coefficients give a monthly market level, net of
+what sold. It peaks in March 2022, is about 25\% lower by December 2025, and dips from spring into summer
+every year. Every training price is divided by its month's level, so the trees learn what a home is worth
+at an average market level and the index alone carries time.
+(ii) \emph{The home:} size (the midpoint when given as a range, plus a flag), bedrooms, washrooms,
+parking, garage, lot frontage, depth and area, type, style, municipality, community, latitude and longitude.
+(iii) \emph{Same building:} earlier sales at the exact same coordinates, as a count and an average
+market-adjusted price per sq ft.
+(iv) \emph{Nearest sales:} the median adjusted price per sq ft of the 10 nearest earlier sales of the
+same type, times this home's size, and their average distance.
+(v) \emph{Listing text:} a ridge regression on TF-IDF word and word-pair counts predicting how far a
+home's price per sq ft sits above its community-and-type average, plus 30 SVD topics. The strongest words
+are size cues, then condition (``needs'' and ``as is'' down, ``renovated'' up) and some street names.
+\textbf{No leakage:} a training sale only sees sales from earlier months, building statistics exclude
+the sale itself, and training rows get out-of-fold text scores.
+
+\textbf{Model.} The target is the market-adjusted log price, and a sale's weight halves every 12 months.
+The value is the average of four histogram gradient-boosting models (scikit-learn): two with 2,000 trees at
+learning rate 0.025 and two with 800 trees at 0.05. Every leaf holds at least 20 sales, 30\% of features
+are tried at each split, and each model has its own seed. On the 2024 summer one tree alone misses by 11.1\%,
+the average of four by 6.85\%.
+The \emph{market level} for a test home averages the projected index over its likely sale dates: its
+listing date plus 100 typical times on market from past sales, kept only if inside June to September.
+Months past May are projected as the last level plus the median change for that calendar month in earlier
+years, so one unusual year cannot drag the projection.
+The \emph{local fix}: five-fold out-of-fold predictions give an honest miss for every training sale. For
+a new home we average the misses of its 5, 10, 20 and 40 nearest earlier sales of the same type, and
+combine the four averages with weights fitted per property type by ridge regression.
+The estimate is $\exp(\textrm{value} + \textrm{market level} + \textrm{local fix})$, so the three log
+parts multiply in dollars. For one detached house in the 2024 backtest: \$898,771 $\times$ 0.990 (June
+market) $\times$ 1.121 (its area sells above the model's guesses) $=$ \$997,309. It sold for \$994,600.
+
+\textbf{How it differs from the list-aware model, and why.} The two tracks answer different questions,
+so they are built differently. The list price already carries most of what the market knows: the current
+price level, and the home's condition and finish as the seller's agent sees them. The list-aware model
+therefore only predicts the gap between sale and list price (CatBoost on log(sale / list), blended with a
+ridge regression, separately for condos and freeholds), and needs no market index or comparable sales.
+The off-market model may not use the list price, so it has to rebuild the value from scratch: a market
+index to bring every past sale to the same price level and project it into the summer, nearest-sale and
+same-building features to stand in for what an agent would know, the listing text as a hint about
+condition, and the local fix for what is still missing. That is why its error is about twice as large.
+
+\textbf{Validation.} \emph{Walk-forward} (the figure we report): each month from December 2025 to May 2026
+is predicted by a model trained only on sales before it, six full refits. \emph{Summer backtests} copy the
+real test: train on sales before June 1, predict June to September. Every modelling choice was made on the
+2023 and 2024 summers. 2025 was held back; it was checked once at the end and again after the last two
+changes, so we treat it as a confirmation rather than a pristine holdout. We also ran 2021 and 2022 with the
+final model. We never used a random split.
+
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lccccc}
+\toprule
+Summer (train before June 1) & 2021 & 2022 & 2023 & 2024 & 2025 (held back) \\
+\midrule
+MdAPE / MAPE \% & 7.56 / 10.07 & 8.30 / 11.60 & 6.62 / 8.88 & 6.64 / 8.96 & 6.84 / 9.08 \\
+Median signed error \% & +0.4 & +5.1 & +0.9 & +1.5 & +0.9 \\
+\bottomrule
+\end{tabular}
+\caption{Off-market summer backtests. 2021 had only five months of training data; 2022 is the year
+prices fell fast after the spring peak.}
+\end{table}
+
+\textbf{Results.} On walk-forward validation the off-market MdAPE is \textbf{7.31\%} (bootstrap 95\%
+interval 7.14--7.50; MAPE 9.44\%), against 17.7\% for the organisers' simple baseline and 20.8\% for the
+starter (median of the 10 nearest sales). Validation is higher than the summers because March and April 2026
+were hard months (7.9\% and 7.7\%) as prices rose quickly that spring; the other four months were 6.8 to
+7.2\%. The hidden test is a summer, so we expect about \textbf{6.7 to 7.0\%} unless the summer market turns
+sharply, as in 2022. Across all 54,991 out-of-sample predictions, 64\% land within 10\% of the sale price
+and 89\% within 20\%.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.44\linewidth]{slides/failures_type.png}\hspace{0.04\linewidth}
+\includegraphics[width=0.44\linewidth]{slides/failures_decile.png}
+\caption{Off-market typical miss on the 2025 summer by property type (homes in brackets) and by tenth of
+predicted price.}
+\end{figure}
+
+\textbf{Where it fails, and why.} \emph{Type:} condos miss by about 5.5\%, houses by 8.4 to 8.7\%.
+Condos in one building are near-copies, so building history pins them down; two houses with the same size,
+rooms and street can differ in age, renovation, lot and finish, none of which the data records.
+\emph{Price:} the cheapest tenth misses by 5.1\%, the dearest by 10.5\%, since expensive homes are rarer,
+more varied and mostly houses. \emph{Neighbourhood:} across the 97 communities with at least 40 sales in
+2025, the typical miss ranges from 3.9\% (Cedarglen, condos) to 13.5\% (Lindencliffe, 73\% houses);
+the middle half is 6.1 to 8.0\%. It is worse where more sales are houses (correlation 0.39) and where prices
+are higher (0.43). \emph{Time:} estimates lean about 2\% high in July and August, when the summer dip runs
+deeper than projected, and 5\% high in 2022, when prices fell after the spring peak.
+\emph{Honest uncertainty:} an 80\% range for each estimate, from the 10th to 90th percentile of the
+2023--24 misses for its property type, covered 79.5\% of the 2025 homes, with a typical width of 22.6\% of
+the price (about $\pm$11\%). The bootstrap intervals treat homes as independent; homes sold in the same
+month share the same market surprise, so the real uncertainty is somewhat wider.
+
+\textbf{What did not help} (all judged on the 2023 and 2024 summers): separate indexes for houses and
+condos (the projection noise outweighed the bias it fixed); following community price trends (changes in a
+community's premium have autocorrelation $-0.41$, so they reverse rather than persist); blending in a random
+forest (9.2\% on its own); separate tree models for houses and condos (within noise); a fixed summer bias correction (the best shift varied from 0 to 1.75\% by year).
+\textbf{Limits:} do not trust it for expensive or unusual houses, for thin groups such as co-ops (50 test
+homes in 2025), or in a summer when the market turns sharply. Data on age, renovation, floor level and condo
+fees would help most.
